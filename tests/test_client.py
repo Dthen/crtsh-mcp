@@ -120,6 +120,50 @@ async def test_non_retryable_status_raises_immediately():
     assert calls["n"] == 1  # no retries for a 500
 
 
+async def test_retry_on_404_then_success():
+    """crt.sh misuses 404 as a transient overload signal — retry it."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            return httpx.Response(404, text="Not Found")
+        return httpx.Response(200, json=SAMPLE)
+
+    client = make_client(handler)
+    result = await client.search("example.com")
+    assert result == SAMPLE
+    assert calls["n"] == 3  # two 404s, then success
+
+
+async def test_404_cap_raises_after_two_retries():
+    """404 retries are capped at 2 (3 total attempts), not retried forever."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(404, text="Not Found")
+
+    client = make_client(handler)
+    with pytest.raises(CrtshError, match="HTTP 404"):
+        await client.search("example.com")
+    assert calls["n"] == client_mod.MAX_404_RETRIES + 1  # 3 total attempts
+
+
+async def test_400_not_retried():
+    """Other 4xx (400) stay immediately fatal — guard against over-broadening."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(400, text="Bad Request")
+
+    client = make_client(handler)
+    with pytest.raises(CrtshError, match="HTTP 400"):
+        await client.search("example.com")
+    assert calls["n"] == 1  # no retries for a 400
+
+
 # -- Caching ---------------------------------------------------------------
 
 

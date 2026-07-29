@@ -32,6 +32,14 @@ BACKOFF_BASE = 1.0  # seconds; delays are 1s, 2s, 4s
 # HTTP status codes that warrant a retry.
 RETRYABLE_STATUS = {502, 503}
 
+# crt.sh misuses HTTP 404 as a generic "I'm overloaded, go away" response under
+# load rather than a genuine "not found" — a live QA test observed it return
+# 404 twice for a perfectly valid query, then succeed on the third try. So we
+# retry 404 too, but more conservatively than 502/503 (a 404 is more likely to
+# be genuine, so it gets a lower cap). DO NOT "fix" this back to non-retryable
+# without first re-checking live crt.sh behaviour under load.
+MAX_404_RETRIES = 2
+
 # Default cache TTL (seconds) for search results.
 DEFAULT_CACHE_TTL = 300
 
@@ -163,6 +171,7 @@ class CrtshClient:
     async def _fetch_with_retries(self, path: str) -> list[dict[str, Any]]:
         """GET ``path`` retrying transient failures with exponential backoff."""
         last_error: Exception | None = None
+        not_found_retries = 0  # separate, lower cap for transient 404s
 
         for attempt in range(MAX_RETRIES + 1):
             if attempt > 0:
@@ -178,6 +187,20 @@ class CrtshClient:
                 last_error = CrtshError(
                     f"crt.sh returned HTTP {response.status_code} (overloaded)"
                 )
+                continue
+
+            # crt.sh misuses 404 as a transient "overloaded" signal under load
+            # (see MAX_404_RETRIES above), so retry it — but with a lower cap
+            # than 502/503 since a 404 is more likely to be genuine.
+            if response.status_code == 404:
+                not_found_retries += 1
+                last_error = CrtshError(
+                    "crt.sh returned HTTP 404 (possibly transient overload)"
+                )
+                if not_found_retries > MAX_404_RETRIES:
+                    raise CrtshError(
+                        "crt.sh request failed with HTTP 404"
+                    )
                 continue
 
             # Non-retryable status codes fail immediately.
