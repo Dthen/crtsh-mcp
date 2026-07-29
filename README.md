@@ -1,36 +1,66 @@
 # crt.sh MCP Server
 
-MCP server wrapping [crt.sh](https://crt.sh) — Certificate Transparency log search. Every SSL/TLS certificate ever publicly issued, searchable by domain, organisation, or fingerprint.
+MCP server wrapping [crt.sh](https://crt.sh) — Certificate Transparency log search. Every SSL/TLS certificate ever publicly issued, searchable by domain, wildcard, or organisation.
 
-## Why
+## Tools
 
-- Zero existing MCP coverage — lots of CLI tools and Python scripts, but nobody's wrapped it
-- Genuinely useful OSINT/security tool: subdomain enumeration, discovering forgotten dev/staging servers, tracking org infrastructure changes, cert history forensics
-- Dead simple API: `https://crt.sh/?q=example.com&output=json`
+- **search_certificates(query, limit=50)** — Search CT logs for certificates matching a domain, wildcard (`%.example.com`), or organisation name. Returns an object with `count`, `total_found`, `truncated`, an optional `note`, and the `certificates` list (issuer, common name, SANs, validity dates, serial number).
+- **discover_subdomains(domain)** — Enumerate all known subdomains for a domain from cert history. Input is normalized automatically (`*.example.com`, `%.example.com`, `example.com.`, and mixed case all work). Returns `{domain, subdomain_count, subdomains, truncated}`.
+- **get_certificate_details(domain)** — Detailed certificate info for a domain, most recently logged first (up to 20).
+
+## Features
+
+- No API key required — crt.sh is free and unauthenticated
+- Automatic retry with exponential backoff (crt.sh is frequently overloaded — 502s, 404s, and timeouts are retried)
+- In-memory TTL cache (5 min) to avoid hammering the service
+- Wildcard subdomain discovery with input normalization
+- Result truncation with an explicit `truncated` flag — crt.sh caps queries at ~999 rows with no pagination, so the server tells you when results may be incomplete
+
+## Install
+
+```bash
+cd crtsh-mcp
+pip install -e .
+```
+
+## Configure (Hermes)
+
+Add to your Hermes `config.yaml` under `mcp_servers`:
+
+```yaml
+mcp_servers:
+  crtsh:
+    command: /mnt/HC_Volume_105667182/kimbo/.hermes/hermes-agent/venv/bin/python3
+    args: ["-m", "crtsh_mcp.server"]
+```
+
+Or for Claude Desktop / other MCP clients:
+
+```json
+{
+  "mcpServers": {
+    "crtsh": {
+      "command": "python3",
+      "args": ["-m", "crtsh_mcp.server"]
+    }
+  }
+}
+```
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+python -m pytest tests/ -v
+```
 
 ## API Notes
 
-- **Auth:** None. Free. No key.
-- **Rate limits:** ~60 req/min per IP (unpublished, confirmed via their Google Group)
-- **Also exposes:** A public PostgreSQL interface for heavier queries
-- **Output:** JSON array — issuer, dates, common names, serial numbers, fingerprint
+- **Source:** https://crt.sh (`?q=<identity>&output=json`)
+- **Auth:** None
+- **Rate limits:** ~60 req/min per IP (unpublished)
+- **Reliability:** Flaky — a free community resource that is often overloaded. Expect intermittent 502s, 404s, and timeouts; this server retries transient failures automatically with backoff (1s, 2s, 4s).
+- **Result cap:** ~999 rows per query, no pagination. The `truncated` flag signals when this cap (or your `limit`) cut results off.
+- **Wildcards:** `%` is the SQL LIKE wildcard (`%.example.com` matches all subdomains). Only identity/org searches support JSON output; fingerprint, serial, and crt.sh-ID lookups are HTML-only and unsupported here.
 
-## Rough Tool Ideas
-
-- `search_certificates(domain)` — all certs for a domain (including wildcards)
-- `search_by_org(organisation)` — certs by org name
-- `get_certificate(id)` — full details for a specific cert
-- `subdomain_discovery(domain)` — extract unique subdomains from cert history
-- `cert_history(domain)` — timeline of cert issuance for a domain
-
-## Status
-
-⚠️ **Before proceeding:** This needs proper research and planning before any code is written. Use the `plan` skill for a thorough execution plan and `subagent-driven-development` for implementation. Research first, build second.
-
-### Research TODO
-- [ ] Confirm all API endpoints, parameters, and response shapes
-- [ ] Test rate limits and error handling behaviour
-- [ ] Investigate the PostgreSQL interface as an alternative
-- [ ] Check pagination behaviour (known 999-result cap on some queries)
-- [ ] Survey existing CLI tools for feature inspiration
-- [ ] Decide: TypeScript or Python?
+> **Note:** crt.sh is rate-limited and flaky. The server retries automatically, but if it reports the service as unavailable, wait a moment and try again.

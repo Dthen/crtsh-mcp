@@ -29,12 +29,16 @@ class FakeClient:
         self.results = results if results is not None else []
         self.error = error
         self.calls: list[str] = []
+        self.aclose_called = False
 
     async def search(self, query, **kwargs):
         self.calls.append(query)
         if self.error is not None:
             raise self.error
         return self.results
+
+    async def aclose(self):
+        self.aclose_called = True
 
 
 @pytest.fixture
@@ -51,21 +55,39 @@ def fake_client(monkeypatch):
 async def test_search_certificates_truncates_to_limit(fake_client):
     fake_client.results = [make_cert(f"host{i}.example.com", "2026-01-01T00:00:00") for i in range(100)]
     result = await server_mod.search_certificates("example.com", limit=50)
-    assert isinstance(result, list)
-    assert len(result) == 50
+    assert isinstance(result, dict)
+    assert result["count"] == 50
+    assert result["total_found"] == 100
+    assert result["truncated"] is True
+    assert len(result["certificates"]) == 50
+    assert "note" in result
 
 
 async def test_search_certificates_default_limit(fake_client):
     fake_client.results = [make_cert(f"host{i}.example.com", "2026-01-01T00:00:00") for i in range(80)]
     result = await server_mod.search_certificates("example.com")
-    assert isinstance(result, list)
-    assert len(result) == 50  # default limit
+    assert isinstance(result, dict)
+    assert result["count"] == 50  # default limit
+    assert result["total_found"] == 80
+    assert result["truncated"] is True
 
 
 async def test_search_certificates_fewer_than_limit(fake_client):
     fake_client.results = [make_cert("example.com", "2026-01-01T00:00:00")]
     result = await server_mod.search_certificates("example.com", limit=50)
-    assert len(result) == 1
+    assert result["count"] == 1
+    assert result["total_found"] == 1
+    assert result["truncated"] is False
+    assert "note" not in result
+
+
+async def test_search_certificates_truncated_at_row_cap(fake_client):
+    # 999 rows hits crt.sh's cap — must be flagged even if limit is huge.
+    fake_client.results = [make_cert(f"h{i}.example.com", "2026-01-01T00:00:00") for i in range(999)]
+    result = await server_mod.search_certificates("example.com", limit=1000)
+    assert result["truncated"] is True
+    assert result["total_found"] == 999
+    assert "cap" in result["note"]
 
 
 # -- discover_subdomains ---------------------------------------------------
@@ -81,12 +103,33 @@ async def test_discover_subdomains_returns_structured_dict(fake_client):
     assert result["domain"] == "example.com"
     assert result["subdomain_count"] == 2
     assert result["subdomains"] == ["api.example.com", "example.com"]
+    assert result["truncated"] is False
 
 
 async def test_discover_subdomains_builds_wildcard_query(fake_client):
     fake_client.results = []
     await server_mod.discover_subdomains("example.com")
     assert fake_client.calls == ["%.example.com"]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["*.example.com", "example.com.", "%.example.com", "  *.Example.COM.  "],
+)
+async def test_discover_subdomains_normalizes_input(fake_client, raw):
+    fake_client.results = []
+    result = await server_mod.discover_subdomains(raw)
+    assert fake_client.calls == ["%.example.com"]
+    assert result["domain"] == "example.com"
+
+
+async def test_discover_subdomains_truncated_at_row_cap(fake_client):
+    fake_client.results = [
+        make_cert(f"h{i}.example.com", "2026-01-01T00:00:00", name_value=f"h{i}.example.com")
+        for i in range(999)
+    ]
+    result = await server_mod.discover_subdomains("example.com")
+    assert result["truncated"] is True
 
 
 # -- get_certificate_details -----------------------------------------------
@@ -141,3 +184,17 @@ async def test_get_certificate_details_error_returns_string(monkeypatch):
     result = await server_mod.get_certificate_details("example.com")
     assert isinstance(result, str)
     assert result.startswith("Error:")
+
+
+# -- client shutdown -------------------------------------------------------
+
+
+async def test_close_client_closes_underlying_client(fake_client):
+    await server_mod.close_client()
+    assert fake_client.aclose_called is True
+
+
+async def test_lifespan_closes_client_on_shutdown(fake_client):
+    async with server_mod._lifespan(server_mod.mcp):
+        assert fake_client.aclose_called is False
+    assert fake_client.aclose_called is True
