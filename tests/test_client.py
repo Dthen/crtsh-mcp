@@ -211,6 +211,46 @@ async def test_cache_expiry_refetches(monkeypatch):
     assert calls["n"] == 2
 
 
+async def test_cache_is_bounded_evicts_oldest(monkeypatch):
+    """Filling the cache past MAX_CACHE_SIZE evicts the oldest entries."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=SAMPLE)
+
+    fake_time = {"t": 1000.0}
+    monkeypatch.setattr(client_mod.time, "monotonic", lambda: fake_time["t"])
+
+    client = make_client(handler)
+    total = client_mod.MAX_CACHE_SIZE + 50
+    for i in range(total):
+        fake_time["t"] += 1.0  # strictly increasing timestamps
+        await client.search(f"domain-{i}.example.com", cache_ttl=3600)
+
+    # Cache never grows beyond the bound.
+    assert len(client._cache) == client_mod.MAX_CACHE_SIZE
+    # Oldest entries were evicted; newest retained.
+    assert "/?q=domain-0.example.com&output=json" not in client._cache
+    assert (
+        f"/?q=domain-{total - 1}.example.com&output=json" in client._cache
+    )
+
+
+async def test_cache_returns_copies_not_references():
+    """Mutating a returned result must not corrupt the cached data."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=SAMPLE)
+
+    client = make_client(handler)
+    first = await client.search("example.com", cache_ttl=300)
+    # Mutate the returned data (both the list and the inner dict).
+    first[0]["common_name"] = "MUTATED"
+    first.append({"common_name": "INJECTED"})
+
+    second = await client.search("example.com", cache_ttl=300)
+    assert second == SAMPLE  # cache served unmutated data
+    assert second[0]["common_name"] == "example.com"
+    assert len(second) == 1
+
+
 # -- Error body handling ---------------------------------------------------
 
 

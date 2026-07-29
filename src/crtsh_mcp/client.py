@@ -14,6 +14,7 @@ serial-number, and crt.sh-ID lookups are HTML-only and will raise
 from __future__ import annotations
 
 import asyncio
+import copy
 import time
 from typing import Any
 from urllib.parse import quote
@@ -42,6 +43,11 @@ MAX_404_RETRIES = 2
 
 # Default cache TTL (seconds) for search results.
 DEFAULT_CACHE_TTL = 300
+
+# Maximum number of entries retained in the in-memory cache. When the cache
+# exceeds this size after an insert, the oldest entries (by timestamp) are
+# evicted so a long-running server cannot grow the cache without bound.
+MAX_CACHE_SIZE = 256
 
 
 class CrtshError(Exception):
@@ -160,13 +166,28 @@ class CrtshClient:
             if cached is not None:
                 ts, data = cached
                 if now - ts < cache_ttl:
-                    return data
+                    # Return a deep copy so callers cannot mutate the cached
+                    # data (the cache stores the canonical list of dicts).
+                    return copy.deepcopy(data)
 
         data = await self._fetch_with_retries(path)
 
         if cache_ttl > 0:
             self._cache[cache_key] = (time.monotonic(), data)
-        return data
+            self._evict_if_needed()
+        # Return a copy of freshly-fetched data too, for a consistent contract
+        # (callers may mutate the result without affecting the cached copy).
+        return copy.deepcopy(data)
+
+    def _evict_if_needed(self) -> None:
+        """Drop the oldest cache entries when the cache exceeds MAX_CACHE_SIZE."""
+        if len(self._cache) <= MAX_CACHE_SIZE:
+            return
+        # Order keys by timestamp (oldest first) and remove the excess.
+        ordered = sorted(self._cache, key=lambda k: self._cache[k][0])
+        excess = len(self._cache) - MAX_CACHE_SIZE
+        for key in ordered[:excess]:
+            del self._cache[key]
 
     async def _fetch_with_retries(self, path: str) -> list[dict[str, Any]]:
         """GET ``path`` retrying transient failures with exponential backoff."""
