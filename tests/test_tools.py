@@ -62,6 +62,15 @@ async def test_search_certificates_rejects_empty_query(fake_client, raw):
     assert fake_client.calls == []
 
 
+@pytest.mark.parametrize("raw", ["example.com\n", "  example.com  ", "\texample.com\r\n"])
+async def test_search_certificates_strips_query_before_client_call(fake_client, raw):
+    fake_client.results = [make_cert("example.com", "2026-01-01T00:00:00")]
+    result = await server_mod.search_certificates(raw, limit=2)
+    assert isinstance(result, dict)
+    # The client must receive the stripped query, not the raw whitespace-padded one.
+    assert fake_client.calls == ["example.com"]
+
+
 @pytest.mark.parametrize("bad_limit", [0, -1])
 async def test_search_certificates_rejects_non_positive_limit(fake_client, bad_limit):
     fake_client.results = [make_cert("example.com", "2026-01-01T00:00:00")]
