@@ -132,6 +132,27 @@ async def test_discover_subdomains_truncated_at_row_cap(fake_client):
     assert result["truncated"] is True
 
 
+@pytest.mark.parametrize("raw", ["", "   ", "."])
+async def test_discover_subdomains_rejects_degenerate_domain(fake_client, raw):
+    fake_client.results = []
+    result = await server_mod.discover_subdomains(raw)
+    assert isinstance(result, str)
+    assert result.startswith("Error:")
+    assert "invalid domain" in result
+    # No garbage query should have been issued to the client.
+    assert fake_client.calls == []
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "."])
+async def test_get_certificate_details_rejects_degenerate_domain(fake_client, raw):
+    fake_client.results = []
+    result = await server_mod.get_certificate_details(raw)
+    assert isinstance(result, str)
+    assert result.startswith("Error:")
+    assert "invalid domain" in result
+    assert fake_client.calls == []
+
+
 # -- get_certificate_details -----------------------------------------------
 
 
@@ -142,16 +163,54 @@ async def test_get_certificate_details_sorts_descending(fake_client):
         make_cert("mid.example.com", "2025-06-01T00:00:00"),
     ]
     result = await server_mod.get_certificate_details("example.com")
-    assert isinstance(result, list)
-    timestamps = [c["entry_timestamp"] for c in result]
+    assert isinstance(result, dict)
+    assert result["count"] == 3
+    assert result["total_found"] == 3
+    assert result["truncated"] is False
+    timestamps = [c["entry_timestamp"] for c in result["certificates"]]
     assert timestamps == sorted(timestamps, reverse=True)
-    assert result[0]["common_name"] == "new.example.com"
+    assert result["certificates"][0]["common_name"] == "new.example.com"
 
 
 async def test_get_certificate_details_limits_to_20(fake_client):
     fake_client.results = [make_cert(f"h{i}.example.com", f"2026-01-{i+1:02d}T00:00:00") for i in range(30)]
     result = await server_mod.get_certificate_details("example.com")
-    assert len(result) == 20
+    assert result["count"] == 20
+    assert len(result["certificates"]) == 20
+
+
+async def test_get_certificate_details_truncated_flag_when_over_20(fake_client):
+    fake_client.results = [make_cert(f"h{i}.example.com", f"2026-01-{i+1:02d}T00:00:00") for i in range(30)]
+    result = await server_mod.get_certificate_details("example.com")
+    assert result["truncated"] is True
+    assert result["total_found"] == 30
+    assert result["count"] == 20
+    assert "note" in result
+
+
+async def test_get_certificate_details_not_truncated_at_exactly_20(fake_client):
+    fake_client.results = [make_cert(f"h{i}.example.com", f"2026-01-{i+1:02d}T00:00:00") for i in range(20)]
+    result = await server_mod.get_certificate_details("example.com")
+    assert result["truncated"] is False
+    assert result["total_found"] == 20
+    assert result["count"] == 20
+    assert "note" not in result
+
+
+async def test_get_certificate_details_does_not_mutate_cache(fake_client):
+    # The client cache returns its list by reference; sorting must not reorder it.
+    original = [
+        make_cert("old.example.com", "2024-01-01T00:00:00"),
+        make_cert("new.example.com", "2026-05-01T00:00:00"),
+        make_cert("mid.example.com", "2025-06-01T00:00:00"),
+    ]
+    fake_client.results = original
+    await server_mod.get_certificate_details("example.com")
+    assert [c["common_name"] for c in original] == [
+        "old.example.com",
+        "new.example.com",
+        "mid.example.com",
+    ]
 
 
 # -- error handling --------------------------------------------------------

@@ -118,9 +118,12 @@ async def discover_subdomains(domain: str) -> dict[str, Any] | str:
     Returns an object with the domain, the number of unique subdomains found,
     the sorted list of subdomain names, and a ``truncated`` flag (True when
     the underlying crt.sh search hit its ~999-row cap, meaning more subdomains
-    likely exist than shown).
+    likely exist than shown). Returns an ``Error:`` string for a degenerate
+    domain that normalizes to empty (e.g. "", "   ", ".").
     """
     normalized = _normalize_domain(domain)
+    if not normalized:
+        return "Error: invalid domain"
     try:
         results = await _client.search(f"%.{normalized}")
         subdomains = extract_subdomains(results)
@@ -135,19 +138,44 @@ async def discover_subdomains(domain: str) -> dict[str, Any] | str:
 
 
 @mcp.tool()
-async def get_certificate_details(domain: str) -> list[dict[str, Any]] | str:
+async def get_certificate_details(domain: str) -> dict[str, Any] | str:
     """Get detailed certificate information for a domain, including issuer, validity period, serial number, and all subject alternative names. Returns the most recent certificates first.
 
     Args:
         domain: The domain to look up certificate details for (e.g. "example.com").
 
-    Returns a list of up to 20 certificate dicts, sorted by entry_timestamp
-    descending (most recently logged first).
+    Returns an object with ``count`` (number of certificates returned, up to
+    20), ``total_found`` (certificates crt.sh returned before truncation),
+    ``truncated`` (True when more than 20 certificates exist and only the 20
+    most recent were returned), an optional ``note`` explaining the truncation,
+    and ``certificates`` (a list of up to 20 certificate dicts sorted by
+    entry_timestamp descending, most recently logged first). Returns an
+    ``Error:`` string for a degenerate domain that normalizes to empty.
     """
+    normalized = _normalize_domain(domain)
+    if not normalized:
+        return "Error: invalid domain"
     try:
-        results = await _client.search(domain)
-        results.sort(key=lambda c: c.get("entry_timestamp") or "", reverse=True)
-        return results[:20]
+        results = await _client.search(normalized)
+        total_found = len(results)
+        # Sort a COPY — the client cache returns its list by reference, so
+        # sorting in place would corrupt the cached data for other callers.
+        certificates = sorted(
+            results, key=lambda c: c.get("entry_timestamp") or "", reverse=True
+        )[:20]
+        truncated = total_found > 20
+        out: dict[str, Any] = {
+            "count": len(certificates),
+            "total_found": total_found,
+            "truncated": truncated,
+            "certificates": certificates,
+        }
+        if truncated:
+            out["note"] = (
+                f"{total_found} certificates matched but only the 20 most recent "
+                "were returned. Narrow the domain for a complete view."
+            )
+        return out
     except (CrtshError, httpx.HTTPError) as e:
         return f"Error: {e}"
 
