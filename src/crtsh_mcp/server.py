@@ -78,6 +78,10 @@ async def search_certificates(query: str, limit: int = 50) -> dict[str, Any] | s
     issuer_name, common_name, name_value (SANs), id, entry_timestamp,
     not_before, not_after, and serial_number fields.
     """
+    if not query.strip():
+        return "Error: please provide a search query"
+    if limit < 1:
+        return "Error: limit must be a positive integer"
     try:
         results = await _client.search(query)
         total_found = len(results)

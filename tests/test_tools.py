@@ -52,6 +52,26 @@ def fake_client(monkeypatch):
 # -- search_certificates ---------------------------------------------------
 
 
+@pytest.mark.parametrize("raw", ["", "   "])
+async def test_search_certificates_rejects_empty_query(fake_client, raw):
+    result = await server_mod.search_certificates(raw)
+    assert isinstance(result, str)
+    assert result.startswith("Error:")
+    assert "search query" in result
+    # No garbage query should have been issued to the client.
+    assert fake_client.calls == []
+
+
+@pytest.mark.parametrize("bad_limit", [0, -1])
+async def test_search_certificates_rejects_non_positive_limit(fake_client, bad_limit):
+    fake_client.results = [make_cert("example.com", "2026-01-01T00:00:00")]
+    result = await server_mod.search_certificates("example.com", limit=bad_limit)
+    assert isinstance(result, str)
+    assert result.startswith("Error:")
+    assert "positive integer" in result
+    assert fake_client.calls == []
+
+
 async def test_search_certificates_truncates_to_limit(fake_client):
     fake_client.results = [make_cert(f"host{i}.example.com", "2026-01-01T00:00:00") for i in range(100)]
     result = await server_mod.search_certificates("example.com", limit=50)

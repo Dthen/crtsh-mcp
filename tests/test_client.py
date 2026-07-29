@@ -329,3 +329,21 @@ def test_extract_subdomains_handles_missing_and_blank():
         {"name_value": "a.com\n\n  \nb.com"},
     ]
     assert extract_subdomains(results) == ["a.com", "b.com"]
+
+
+def test_extract_subdomains_filters_non_hostnames():
+    """Cert CN/SAN strings with spaces, @, or bare * are not subdomains."""
+    results = [
+        {"name_value": "www.example.com\nmail.example.com"},
+        {"name_value": "as207960 test intermediate - example.com"},
+        {"name_value": "subjectname@example.com"},
+        {"name_value": "*"},
+        {"name_value": "*.example.com"},
+    ]
+    subs = extract_subdomains(results)
+    assert subs == ["example.com", "mail.example.com", "www.example.com"]
+    # No junk entries leaked through.
+    for s in subs:
+        assert " " not in s
+        assert "@" not in s
+        assert s != "*"

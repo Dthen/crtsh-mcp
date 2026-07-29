@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import re
 import time
 from typing import Any
 from urllib.parse import quote
@@ -54,19 +55,32 @@ class CrtshError(Exception):
     """Raised when a crt.sh request ultimately fails or returns an error body."""
 
 
+# A valid hostname: one or more dot-separated labels, each label starting and
+# ending with an alphanumeric character, with hyphens allowed in the middle.
+# Rejects spaces, @, and other special characters that appear in cert CN/SAN
+# strings but are not valid hostnames (e.g. "subjectname@example.com",
+# "as207960 test intermediate - example.com").
+_HOSTNAME_RE = re.compile(
+    r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$"
+)
+
+
 def extract_subdomains(results: list[dict[str, Any]]) -> list[str]:
     """Extract a sorted list of unique subdomains from a search result set.
 
     Each result's ``name_value`` field is a newline-delimited list of all
     names the certificate covers (CN + SANs). Wildcard entries such as
     ``*.example.com`` are reduced to their base domain (``example.com``).
+    Entries that are not valid hostnames (containing spaces, ``@``, or other
+    special characters) are filtered out — these are cert CN/SAN strings,
+    not subdomains.
 
     Args:
         results: A list of certificate dicts as returned by
             :meth:`CrtshClient.search`.
 
     Returns:
-        A sorted list of unique domain names.
+        A sorted list of unique valid domain names.
     """
     seen: set[str] = set()
     for entry in results:
@@ -78,8 +92,10 @@ def extract_subdomains(results: list[dict[str, Any]]) -> list[str]:
             # Reduce wildcard entries to their base domain.
             if name.startswith("*."):
                 name = name[2:]
-            if name:
-                seen.add(name)
+            # Skip bare wildcards and anything that isn't a valid hostname.
+            if not name or name == "*" or not _HOSTNAME_RE.match(name):
+                continue
+            seen.add(name)
     return sorted(seen)
 
 
