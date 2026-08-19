@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 from crtsh_mcp.client import CrtshClient, CrtshError, extract_subdomains
 
