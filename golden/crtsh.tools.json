@@ -1,0 +1,133 @@
+[
+  {
+    "name": "search_certificates",
+    "description": "Search Certificate Transparency logs for SSL/TLS certificates matching a domain or identity. Use % as wildcard (e.g. '%.example.com' for all subdomains). Returns certificate details including issuer, validity dates, and subject alternative names.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "A domain, wildcard (``%.example.com``), or organisation name\nto search for in Certificate Transparency logs."
+        },
+        "limit": {
+          "default": 50,
+          "type": "integer",
+          "description": "Maximum number of results to return (default 50). crt.sh can\nreturn up to 999 rows; results are truncated to this limit to\navoid flooding the context window."
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object",
+      "x-fastmcp-wrap-result": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "discover_subdomains",
+    "description": "Discover all known subdomains for a domain by searching Certificate Transparency logs. Returns a deduplicated, sorted list of subdomain names.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "domain": {
+          "type": "string",
+          "description": "The base domain to enumerate subdomains for (e.g. \"example.com\").\nWildcard prefixes (\"*.example.com\", \"%.example.com\"), a trailing\ndot, and mixed case are all normalized automatically."
+        }
+      },
+      "required": [
+        "domain"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object",
+      "x-fastmcp-wrap-result": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  },
+  {
+    "name": "get_certificate_details",
+    "description": "Get detailed certificate information for a domain, including issuer, validity period, serial number, and all subject alternative names. Returns the most recent certificates first.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "domain": {
+          "type": "string",
+          "description": "The domain to look up certificate details for (e.g. \"example.com\")."
+        }
+      },
+      "required": [
+        "domain"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object",
+      "x-fastmcp-wrap-result": true
+    },
+    "_meta": {
+      "fastmcp": {
+        "tags": []
+      }
+    }
+  }
+]
