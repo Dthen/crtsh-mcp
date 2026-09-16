@@ -15,7 +15,7 @@ if hasattr(sys.stdin, "reconfigure"):            # binary/undecodable bytes must
 from crtsh_mcp.client import CrtshClient, CrtshError, extract_subdomains
 
 ERA_VERSION = "2026-07-28"
-SERVER_INFO = {"name": "crtsh", "version": "0.3.0"}          # ours to choose (T00 note: legacy fastmcp self-reported 3.4.7 — not copied)
+SERVER_INFO = {"name": "crtsh", "version": "0.3.0"}          # keep in sync with pyproject.toml [project] version (T00 note: legacy fastmcp self-reported 3.4.7 — not copied)
 ERA_RESULT_FIELDS = {"resultType": "complete", "ttlMs": 0, "cacheScope": "private"}
 RESULT_META = {"io.modelcontextprotocol/serverInfo": SERVER_INFO}     # spec-RECOMMENDED stamp, optional
 

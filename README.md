@@ -34,8 +34,10 @@ mcp_servers:
     args: ["-m", "crtsh_mcp.server"]
 ```
 
-The server runs on the standalone `fastmcp` package (mcp SDK 2.x dropped
-`mcp.server.fastmcp`). Set up the venv once:
+The server is stdlib-only (zero runtime dependencies) and speaks the 2026-07-28
+stateless era (`server/discover`; a legacy `initialize` answers `-32601`); retry/
+backoff/TTL-cache/redirect semantics are documented in the `src/crtsh_mcp/client.py`
+header. Set up the venv once:
 
 ```bash
 cd crtsh-mcp
@@ -60,8 +62,11 @@ Or for Claude Desktop / other MCP clients:
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest tests/ -v
+python -m pytest
 ```
+
+Run `python -m pytest` from the repo root — the suite covers both `tests/` and the
+root-level `test_stateless_era.py` era suite.
 
 ## API Notes
 
@@ -73,6 +78,13 @@ python -m pytest tests/ -v
 - **Wildcards:** `%` is the SQL LIKE wildcard (`%.example.com` matches all subdomains). Only identity/org searches support JSON output; fingerprint, serial, and crt.sh-ID lookups are HTML-only and unsupported here.
 
 > **Note:** crt.sh is rate-limited and flaky. The server retries automatically, but if it reports the service as unavailable, wait a moment and try again.
+
+## Migration note (2026-09-14, card B.3)
+
+The server shed its MCP framework layer: it is now stdlib-only (zero runtime
+dependencies) and speaks the stateless 2026-07-28 era; `pre-migration/20260914` is
+the rollback anchor for the old code. The User-Agent in `client.py` remains the
+legacy literal `crtsh-mcp/0.1.0`; pinned by tests.
 
 ## MIGRATION-NOTES (cutover hand-off — card B.3 / T10; NOT executed here)
 
