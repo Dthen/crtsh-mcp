@@ -1,0 +1,98 @@
+{
+  "note": "Captured from the legacy fastmcp 3.4.7 server BEFORE the T07 rewrite (D4 golden-before-edit). Fully network-free: in-process cases patched _client.search with canned fakes; the wire dict case spawned the server with CrtshClient.search patched to the canned SAMPLE (the tag-era async shape) and aclose stubbed (T02 drift), the error case short-circuits on blank query before the client. crt.sh was never contacted. §5 compact encoding (json.dumps(separators=(',',':'), ensure_ascii=False) for dicts, verbatim passthrough for strings) CONFIRMED on the wire for this server — no result-shape drift, so no R3 DEVIATION tag. T07 deletes tests/characterization_capture.py; this fixture governs.",
+  "cases": [
+    {
+      "name": "search_certificates",
+      "arguments": {
+        "query": "example.com"
+      },
+      "search_mode": "sample",
+      "search_queries": [
+        "example.com"
+      ],
+      "return_repr": "{\"count\":1,\"total_found\":1,\"truncated\":false,\"certificates\":[{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376238,\"entry_timestamp\":\"2026-05-31T22:13:01.653\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"}]}"
+    },
+    {
+      "name": "search_certificates",
+      "arguments": {
+        "query": "  "
+      },
+      "search_mode": "short",
+      "search_queries": [],
+      "return_repr": "\"Error: please provide a search query\""
+    },
+    {
+      "name": "search_certificates",
+      "arguments": {
+        "query": "example.com",
+        "limit": 0
+      },
+      "search_mode": "short",
+      "search_queries": [],
+      "return_repr": "\"Error: limit must be a positive integer\""
+    },
+    {
+      "name": "discover_subdomains",
+      "arguments": {
+        "domain": "example.com"
+      },
+      "search_mode": "sample",
+      "search_queries": [
+        "%.example.com"
+      ],
+      "return_repr": "{\"domain\":\"example.com\",\"subdomain_count\":1,\"subdomains\":[\"example.com\"],\"truncated\":false}"
+    },
+    {
+      "name": "discover_subdomains",
+      "arguments": {
+        "domain": "."
+      },
+      "search_mode": "short",
+      "search_queries": [],
+      "return_repr": "\"Error: invalid domain\""
+    },
+    {
+      "name": "get_certificate_details",
+      "arguments": {
+        "domain": "example.com"
+      },
+      "search_mode": "sample",
+      "search_queries": [
+        "example.com"
+      ],
+      "return_repr": "{\"count\":1,\"total_found\":1,\"truncated\":false,\"certificates\":[{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376238,\"entry_timestamp\":\"2026-05-31T22:13:01.653\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"}]}"
+    },
+    {
+      "name": "get_certificate_details",
+      "arguments": {
+        "domain": "example.com"
+      },
+      "search_mode": "rows25",
+      "search_queries": [
+        "example.com"
+      ],
+      "return_repr": "{\"count\":20,\"total_found\":25,\"truncated\":true,\"certificates\":[{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"c24.example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376262,\"entry_timestamp\":\"2026-06-25T00:00:24.000\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"},{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"c23.example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376261,\"entry_timestamp\":\"2026-06-24T00:00:23.000\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"},{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"c22.example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376260,\"entry_timestamp\":\"2026-06-23T00:00:22.000\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"},{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"c21.example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376259,\"entry_timestamp\":\"2026-06-22T00:00:21.000\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"},{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"c20.example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376258,\"entry_timestamp\":\"2026-06-21T00:00:20.000\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"},{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"c19.example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376257,\"entry_timestamp\":\"2026-06-20T00:00:19.000\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"},{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"c18.example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376256,\"entry_timestamp\":\"2026-06-19T00:00:18.000\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"},{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"c17.example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376255,\"entry_timestamp\":\"2026-06-18T00:00:17.000\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"},{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"c16.example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376254,\"entry_timestamp\":\"2026-06-17T00:00:16.000\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"},{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"c15.example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376253,\"entry_timestamp\":\"2026-06-16T00:00:15.000\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"},{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"c14.example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376252,\"entry_timestamp\":\"2026-06-15T00:00:14.000\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"},{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"c13.example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376251,\"entry_timestamp\":\"2026-06-14T00:00:13.000\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"},{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"c12.example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376250,\"entry_timestamp\":\"2026-06-13T00:00:12.000\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"},{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"c11.example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376249,\"entry_timestamp\":\"2026-06-12T00:00:11.000\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"},{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"c10.example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376248,\"entry_timestamp\":\"2026-06-11T00:00:10.000\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"},{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"c9.example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376247,\"entry_timestamp\":\"2026-06-10T00:00:09.000\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"},{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"c8.example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376246,\"entry_timestamp\":\"2026-06-09T00:00:08.000\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"},{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"c7.example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376245,\"entry_timestamp\":\"2026-06-08T00:00:07.000\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"},{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"c6.example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376244,\"entry_timestamp\":\"2026-06-07T00:00:06.000\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"},{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"c5.example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376243,\"entry_timestamp\":\"2026-06-06T00:00:05.000\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"}],\"note\":\"25 certificates matched but only the 20 most recent were returned. Narrow the domain for a complete view.\"}"
+    },
+    {
+      "name": "search_certificates",
+      "arguments": {
+        "query": "example.com"
+      },
+      "search_mode": "boom",
+      "search_queries": [
+        "example.com"
+      ],
+      "return_repr": "\"Error: crt.sh unavailable after 4 attempts — the service is likely overloaded, retry shortly. Last error: timed out\""
+    }
+  ],
+  "wire_text": {
+    "dict_case": "{\"count\":1,\"total_found\":1,\"truncated\":false,\"certificates\":[{\"issuer_ca_id\":413864,\"issuer_name\":\"C=US, O=SSL Corporation, CN=Cloudflare TLS Issuing RSA CA 3\",\"common_name\":\"example.com\",\"name_value\":\"*.example.com\\nexample.com\",\"id\":26787376238,\"entry_timestamp\":\"2026-05-31T22:13:01.653\",\"not_before\":\"2026-05-31T21:39:00\",\"not_after\":\"2026-08-29T21:41:26\",\"serial_number\":\"27fd65644d90aa4763b6cfb53d6dcca3\"}]}",
+    "error_string_case": "Error: please provide a search query"
+  },
+  "wire_detail": {
+    "dict_case_isError": false,
+    "error_case_isError": false,
+    "dict_case_has_structuredContent": true,
+    "path": "spawned legacy stdio subprocess (wrapper patches CrtshClient.search to canned SAMPLE + CrtshClient.aclose to a no-op; zero crt.sh contact)"
+  }
+}
