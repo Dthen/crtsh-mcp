@@ -251,6 +251,22 @@ class CrtshClient:
         | `httpx.ConnectError` / `NetworkError` | retried | `URLError` (DNS/refused), `ConnectionError`, `OSError` | retried (parity) |
         | `httpx.RemoteProtocolError` (incomplete read, bad chunking) | **NOT retried** — escaped `_fetch_with_retries`, folded to `Error: …` by server handlers in ONE attempt | `http.client.HTTPException` (`IncompleteRead`, `BadStatusLine`, `RemoteDisconnected`→`ConnectionError`) | **fed into the retry ladder — R2 fleet standard, intentional deviation, friendly-text parity preserved** |
         | `httpx.TooManyRedirects` | n/a (never follows) | `_RedirectNotFollowed` → returned as a 3xx status | `CrtshError("crt.sh request failed with HTTP 3xx")` in ONE attempt (parity) |
+
+        Deviation statement (facts re-verified from the tag at pin time, not
+        from prose — `git show pre-migration/20260914`): Legacy (tag
+        `pre-migration/20260914`, client.py:219) retried only
+        `(httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError)`.
+        `httpx.RemoteProtocolError` sits on a SIBLING branch (TransportError) —
+        legacy did NOT feed it into the retry ladder; it escaped to the server
+        handlers and was folded into friendly `Error: …` text in ONE attempt
+        (server.py:110/141/184, httpx.HTTPError catch). Post-migration,
+        protocol errors (`http.client.HTTPException`, incl.
+        `RemoteDisconnected`/`IncompleteRead`/`BadStatusLine`) ARE fed into
+        the ladder: this is the R2 fleet standard — a documented intentional
+        deviation, with friendly-text parity preserved (ladder exhaustion
+        still surfaces as `CrtshError` → `Error: …` tool text, never
+        `-32603`). This is NOT "exactly as legacy" and must never be claimed
+        as such.
         """
         url = self.base_url + path
         req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
@@ -278,6 +294,12 @@ class CrtshClient:
             try:
                 status, text = self._raw_get(path)
             except _RETRYABLE_TRANSPORT_ERRORS as exc:
+                # Protocol errors (http.client.HTTPException) land here too:
+                # legacy (tag client.py:219) did NOT retry them — feeding them
+                # into the ladder is the R2 fleet standard, a documented
+                # intentional deviation with friendly-text parity preserved
+                # (exhaustion surfaces as CrtshError → `Error: …` tool text,
+                # never `-32603`). See the `_raw_get` mapping table.
                 last_error = exc
                 continue
 
