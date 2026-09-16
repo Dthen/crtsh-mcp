@@ -206,6 +206,36 @@ def test_tools_call_missing_params_is_32602():
         cleanup(p)
 
 
+def test_non_string_tool_args_fold_to_error_text_never_32603():
+    # Carried-forward T08 caveat, absorbed by T10 (era-suite-owning task): wire-level
+    # regression for REFERENCE §5's fold — a non-string tool argument must land as an
+    # isError result dict (compact JSON text), never a -32603 and never a crash.
+    # Network-free: every value short-circuits at the isinstance gates before any fetch.
+    p = spawn()
+    try:
+        resp = rpc(p, {"jsonrpc": "2.0", "id": 16, "method": "tools/call", "params": {
+            "name": "search_certificates", "arguments": {"query": 42}}})
+        result = resp["result"]
+        assert "error" not in resp and result["content"][0]["text"] == '{"error":"query must be a string"}'
+        assert result.get("isError") is True
+        assert_era_triple(result)
+        resp2 = rpc(p, {"jsonrpc": "2.0", "id": 17, "method": "tools/call", "params": {
+            "name": "get_certificate_details", "arguments": {"domain": ["x"]}}})
+        result2 = resp2["result"]
+        assert "error" not in resp2 and json.loads(result2["content"][0]["text"]) == {"error": "domain must be a string"}
+        assert result2.get("isError") is True
+        assert_era_triple(result2)
+        resp3 = rpc(p, {"jsonrpc": "2.0", "id": 18, "method": "tools/call", "params": {
+            "name": "discover_subdomains", "arguments": "not-an-object"}})
+        result3 = resp3["result"]
+        assert "error" not in resp3 and json.loads(result3["content"][0]["text"]) == {"error": "arguments must be an object"}
+        assert result3.get("isError") is True
+        assert_era_triple(result3)
+        assert p.poll() is None  # server survives all three
+    finally:
+        cleanup(p)
+
+
 def test_ping_answers_empty():
     p = spawn()
     try:

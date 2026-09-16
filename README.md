@@ -73,3 +73,13 @@ python -m pytest tests/ -v
 - **Wildcards:** `%` is the SQL LIKE wildcard (`%.example.com` matches all subdomains). Only identity/org searches support JSON output; fingerprint, serial, and crt.sh-ID lookups are HTML-only and unsupported here.
 
 > **Note:** crt.sh is rate-limited and flaky. The server retries automatically, but if it reports the service as unavailable, wait a moment and try again.
+
+## MIGRATION-NOTES (cutover hand-off — card B.3 / T10; NOT executed here)
+
+```
+server key: crtsh — config.yaml:970-975 today:
+  command: .../mcp-venvs/crtsh-mcp/bin/python3 ; args: [-m, crtsh_mcp.server]
+target after cutover (D.1 flips, ONE restart window; keep old venv until D.1b):
+  command: /mnt/HC_Volume_105667182/kimbo/mcp-venvs/crtsh-mcp-v2/bin/python3
+  args: [-m, crtsh_mcp.server] ; protocol: stateless
+```
