@@ -17,7 +17,7 @@ import subprocess
 import sys
 
 # --- spawn constants: ONE seam; T09 flips PROD_PY to the v2 venv python ------
-PROD_PY = "/mnt/HC_Volume_105667182/kimbo/mcp-venvs/crtsh-mcp/bin/python3"  # today's production (config.yaml:971, VERIFIED 2026-09-14)
+PROD_PY = "/mnt/HC_Volume_105667182/kimbo/mcp-venvs/crtsh-mcp-v2/bin/python3"  # flipped by T09 to the zero-dep v2 venv (D11: old venv kept as rollback anchor)
 SERVER_CMD = [PROD_PY, "-m", "crtsh_mcp.server"]  # package server — mirrors the real config args exactly
 
 REPO = os.path.dirname(os.path.abspath(__file__))
