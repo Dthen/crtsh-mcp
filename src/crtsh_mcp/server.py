@@ -163,8 +163,8 @@ async def get_certificate_details(domain: str) -> dict[str, Any] | str:
     try:
         results = await _client.search(normalized)
         total_found = len(results)
-        # Sort a COPY — the client cache returns its list by reference, so
-        # sorting in place would corrupt the cached data for other callers.
+        # sorted() already returns a copy; the client ALSO hands out deep copies
+        # (see test_cache_returns_copies_not_references) — belt-and-braces, not necessity.
         certificates = sorted(
             results, key=lambda c: c.get("entry_timestamp") or "", reverse=True
         )[:20]

@@ -546,3 +546,131 @@ def test_socket_timeout_is_timeout_error():
     runtime (py3.11+) socket.timeout IS TimeoutError, NOT a URLError."""
     assert socket.timeout is TimeoutError
     assert not issubclass(TimeoutError, urllib.error.URLError)
+
+
+# -- Cache contract pins (T04) ----------------------------------------------
+
+
+def test_cache_hit_returns_deep_copy_mutating_result_cannot_poison_cache():
+    """Deep-copy on the cache-HIT path: nested dicts are copies too.
+
+    Stronger than the legacy-ish shallow check: take a result served from the
+    cache (call #2), mutate BOTH levels (append a sentinel to the list,
+    overwrite and add keys in `result[0]`), then read the cache a third time —
+    it must still be pristine. A shallow `list(data)` on the hit path would
+    share the inner dict and be poisoned by the nested mutations.
+    """
+    calls = {"n": 0}
+
+    def handler(path):
+        calls["n"] += 1
+        return (200, json.dumps(SAMPLE))
+
+    client = make_client(handler)
+    client.search("example.com", cache_ttl=300)          # 1: fresh fetch -> cached
+    hit = client.search("example.com", cache_ttl=300)    # 2: served from cache
+    assert calls["n"] == 1
+    # Mutate the cache-served result at BOTH levels.
+    hit.append({"common_name": "SENTINEL"})
+    hit[0]["common_name"] = "POISONED"
+    hit[0]["nested_poison"] = {"also": "cached?"}
+
+    after = client.search("example.com", cache_ttl=300)  # 3: cache must be pristine
+    assert after == SAMPLE  # incl. inner dict untouched
+    assert calls["n"] == 1   # never re-fetched — every copy above came from the hit path
+
+
+def test_fresh_fetch_also_returned_as_copy():
+    """The uncached fetch path also hands out a copy (client.py:227-229
+
+    "consistent contract"): mutating the FIRST (fresh) result must not poison
+    what a later caller reads from the cache, and the cache must not be
+    re-fetched (seam count stays 1 inside TTL).
+    """
+    calls = {"n": 0}
+
+    def handler(path):
+        calls["n"] += 1
+        return (200, json.dumps(SAMPLE))
+
+    client = make_client(handler)
+    fresh = client.search("example.com", cache_ttl=300)
+    assert calls["n"] == 1
+    # Poison the fresh result before anyone else reads the cache.
+    fresh.append({"common_name": "SENTINEL"})
+    fresh[0]["common_name"] = "POISONED"
+
+    third = client.search("example.com", cache_ttl=300)
+    assert third == SAMPLE  # cached entry untouched by the mutation
+    assert calls["n"] == 1  # NOT re-invoked — proves the copy came from fetch path
+
+
+def test_eviction_is_oldest_first_by_timestamp(monkeypatch):
+    """Strict variant of the legacy bound test: eviction keys on the stored
+
+    timestamp, not dict insertion order. Timestamps run OPPOSITE to insertion
+    order (first inserted = newest), so an implementation that evicted
+    `list(cache)[:excess]` (insertion luck) would delete the wrong keys and
+    fail the survives/gone assertions.
+    """
+    fake_time = {"t": 1000.0}
+    monkeypatch.setattr(client_mod.time, "monotonic", lambda: fake_time["t"])
+
+    def handler(path):
+        return (200, json.dumps(SAMPLE))
+
+    client = make_client(handler)
+    total = client_mod.MAX_CACHE_SIZE + 3  # overflow by exactly 3
+    for i in range(total):
+        # Strictly DECREASING clock: key 0 gets the newest timestamp, key
+        # total-1 the oldest — inversion vs insertion order.
+        fake_time["t"] -= 1.0
+        client.search(f"evict-{i}.example.com", cache_ttl=3600)
+
+    def key_of(i):
+        return f"/?q=evict-{i}.example.com&output=json"
+
+    assert len(client._cache) == client_mod.MAX_CACHE_SIZE
+    # The 3 LOWEST-timestamp keys (last inserted) are gone...
+    for i in (total - 3, total - 2, total - 1):
+        assert key_of(i) not in client._cache
+    # ...and the 3 HIGHEST-timestamp keys (first inserted) survive — an
+    # insertion-order eviction would have deleted these instead.
+    for i in (0, 1, 2):
+        assert key_of(i) in client._cache
+
+
+def test_ttl_boundary_expiry(monkeypatch):
+    """Pins the strict `<` in `now - ts < cache_ttl` (client.py:217).
+
+    Card sequence (cached at t=0; hit at 299.999, refetch past 300) plus the
+    step that actually distinguishes `<` from `<=` — only a query at EXACTLY
+    ttl elapsed (300.0) can: an inclusive `<=` would wrongly serve a hit
+    there, and early-expiry variants die at 299.999. The final 300.001 query
+    is a HIT, pinning that the refetch renewed the entry's timestamp.
+    """
+    fake_time = {"t": 0.0}
+    monkeypatch.setattr(client_mod.time, "monotonic", lambda: fake_time["t"])
+
+    calls = {"n": 0}
+
+    def handler(path):
+        calls["n"] += 1
+        return (200, json.dumps(SAMPLE))
+
+    client = make_client(handler)
+    client.search("example.com", cache_ttl=300)  # cached at t=0
+    assert calls["n"] == 1
+
+    fake_time["t"] = 299.999  # still inside the window
+    hit = client.search("example.com", cache_ttl=300)
+    assert hit == SAMPLE
+    assert calls["n"] == 1  # served from cache — `now - ts < cache_ttl` held
+
+    fake_time["t"] = 300.0  # the exact boundary: strict `<` says EXPIRED
+    client.search("example.com", cache_ttl=300)
+    assert calls["n"] == 2  # refetched — `<=` would have wrongly served the stale entry
+
+    fake_time["t"] = 300.001  # 0.001s past the REFETCH's own timestamp
+    client.search("example.com", cache_ttl=300)
+    assert calls["n"] == 2  # hit again — the fresh fetch renewed the cache timestamp
