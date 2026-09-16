@@ -1,10 +1,11 @@
-"""Async HTTP client for the crt.sh Certificate Transparency API.
+"""Synchronous HTTP client for the crt.sh Certificate Transparency API.
 
 crt.sh exposes a single JSON query endpoint (``?q=<identity>&output=json``)
 with no authentication. The service is a free community resource that is
 frequently overloaded, so this client retries transient failures (502/503,
 timeouts, connection errors) with exponential backoff and caches responses
-in-memory with a per-call TTL.
+in-memory with a per-call TTL. Transport is stdlib urllib (zero runtime
+deps).
 
 Only identity (domain / org) searches support JSON output. Fingerprint,
 serial-number, and crt.sh-ID lookups are HTML-only and will raise
@@ -13,14 +14,15 @@ serial-number, and crt.sh-ID lookups are HTML-only and will raise
 
 from __future__ import annotations
 
-import asyncio
 import copy
+import http.client
+import json
 import re
 import time
+import urllib.error
+import urllib.request
 from typing import Any
 from urllib.parse import quote
-
-import httpx
 
 BASE_URL = "https://crt.sh"
 
@@ -50,9 +52,59 @@ DEFAULT_CACHE_TTL = 300
 # evicted so a long-running server cannot grow the cache without bound.
 MAX_CACHE_SIZE = 256
 
+# Extracted from the legacy httpx ctor literal (client.py:123) — bytes
+# preserved; it says 0.1.0 while pyproject says 0.2.0. Do NOT "fix" the
+# version drift here (card B.3: drift-fixing is out of scope).
+_USER_AGENT = "crtsh-mcp/0.1.0"
+
+# Transport errors the retry ladder catches. TimeoutError is already an
+# OSError subclass (OSError ⊃ ConnectionResetError too), so the tuple's
+# coverage is a superset of the R1 conversion tuple; the seam still wraps
+# timeouts in URLError anyway so ``str(exc)`` stays informative.
+_RETRYABLE_TRANSPORT_ERRORS: tuple[type, ...] = (
+    urllib.error.URLError,
+    OSError,
+    http.client.HTTPException,
+)
+
 
 class CrtshError(Exception):
     """Raised when a crt.sh request ultimately fails or returns an error body."""
+
+
+# parity guard: reproduces legacy httpx follow_redirects=False (VERIFIED from
+# the tag — client.py never passed the flag; the httpx 0.28.1 default is
+# False); urllib's default WOULD be the drift.
+class _RedirectNotFollowed(urllib.error.HTTPError):
+    """urllib would follow this redirect; legacy httpx (follow_redirects=False) did not."""
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Opener handler that refuses to follow any 3xx.
+
+    Raising from ``redirect_request`` covers 301/302/303/307/308 — they all
+    route through this single choke point.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # single choke point
+        raise _RedirectNotFollowed(req.full_url, code, msg, headers, fp)
+
+
+def _build_opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(_NoRedirectHandler)
+
+
+# Module-level singleton, created lazily: the opener is stateless (no
+# connection pool to hold — the legacy httpx client handle is gone), so one
+# shared instance is enough and nothing happens at import time.
+_OPENER: urllib.request.OpenerDirector | None = None
+
+
+def _get_opener() -> urllib.request.OpenerDirector:
+    global _OPENER
+    if _OPENER is None:
+        _OPENER = _build_opener()
+    return _OPENER
 
 
 # A valid hostname: one or more dot-separated labels, each label starting and
@@ -100,7 +152,7 @@ def extract_subdomains(results: list[dict[str, Any]]) -> list[str]:
 
 
 class CrtshClient:
-    """Async wrapper around the crt.sh JSON search endpoint.
+    """Sync wrapper around the crt.sh JSON search endpoint.
 
     Responses are cached in-memory keyed by the query string, with a
     per-call configurable TTL. The cache is a plain dict mapping
@@ -110,36 +162,17 @@ class CrtshClient:
     def __init__(
         self,
         base_url: str = BASE_URL,
-        client: httpx.AsyncClient | None = None,
         timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
         self.base_url = base_url
-        if client is not None:
-            self._client = client
-        else:
-            self._client = httpx.AsyncClient(
-                base_url=base_url,
-                timeout=timeout,
-                headers={"User-Agent": "crtsh-mcp/0.1.0"},
-            )
-        self._owns_client = client is None
+        self.timeout = timeout
         # cache_key -> (timestamp, data)
         self._cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
-
-    async def __aenter__(self) -> "CrtshClient":
-        return self
-
-    async def __aexit__(self, *exc: object) -> None:
-        await self.aclose()
-
-    async def aclose(self) -> None:
-        if self._owns_client:
-            await self._client.aclose()
 
     def clear_cache(self) -> None:
         self._cache.clear()
 
-    async def search(
+    def search(
         self,
         query: str,
         cache_ttl: int = DEFAULT_CACHE_TTL,
@@ -186,7 +219,7 @@ class CrtshClient:
                     # data (the cache stores the canonical list of dicts).
                     return copy.deepcopy(data)
 
-        data = await self._fetch_with_retries(path)
+        data = self._fetch_with_retries(path)
 
         if cache_ttl > 0:
             self._cache[cache_key] = (time.monotonic(), data)
@@ -205,7 +238,35 @@ class CrtshClient:
         for key in ordered[:excess]:
             del self._cache[key]
 
-    async def _fetch_with_retries(self, path: str) -> list[dict[str, Any]]:
+    def _raw_get(self, path: str) -> tuple[int, str]:
+        """Single-GET transport seam: returns ``(status, body_text)``.
+
+        Error-mapping table (legacy httpx -> urllib; this is the R2
+        fleet-standard seam contract — feeding protocol errors into the ladder
+        is an intentional deviation, friendly-text parity is preserved):
+
+        | legacy httpx raised here | old behaviour | new urllib condition | new behaviour |
+        |---|---|---|---|
+        | `httpx.TimeoutException` (incl. `ConnectTimeout`) | retried (tuple member) | `TimeoutError` / `socket.timeout` → wrapped `URLError` | retried (parity) |
+        | `httpx.ConnectError` / `NetworkError` | retried | `URLError` (DNS/refused), `ConnectionError`, `OSError` | retried (parity) |
+        | `httpx.RemoteProtocolError` (incomplete read, bad chunking) | **NOT retried** — escaped `_fetch_with_retries`, folded to `Error: …` by server handlers in ONE attempt | `http.client.HTTPException` (`IncompleteRead`, `BadStatusLine`, `RemoteDisconnected`→`ConnectionError`) | **fed into the retry ladder — R2 fleet standard, intentional deviation, friendly-text parity preserved** |
+        | `httpx.TooManyRedirects` | n/a (never follows) | `_RedirectNotFollowed` → returned as a 3xx status | `CrtshError("crt.sh request failed with HTTP 3xx")` in ONE attempt (parity) |
+        """
+        url = self.base_url + path
+        req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+        try:
+            with _get_opener().open(req, timeout=self.timeout) as resp:
+                return resp.status, resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:  # 4xx/5xx AND our _RedirectNotFollowed: real status
+            return e.code, e.read().decode("utf-8", "replace")
+        except TimeoutError as e:  # R1: py3.11 socket.timeout IS TimeoutError,
+            raise urllib.error.URLError(e) from e  # NOT a URLError subclass — convert at the seam
+        except (urllib.error.URLError, OSError, http.client.HTTPException):
+            # Already ladder-classified members of _RETRYABLE_TRANSPORT_ERRORS
+            # — see the mapping table above; propagate unchanged.
+            raise
+
+    def _fetch_with_retries(self, path: str) -> list[dict[str, Any]]:
         """GET ``path`` retrying transient failures with exponential backoff."""
         last_error: Exception | None = None
         not_found_retries = 0  # separate, lower cap for transient 404s
@@ -213,23 +274,23 @@ class CrtshClient:
         for attempt in range(MAX_RETRIES + 1):
             if attempt > 0:
                 delay = BACKOFF_BASE * (2 ** (attempt - 1))
-                await asyncio.sleep(delay)
+                time.sleep(delay)
             try:
-                response = await self._client.get(path)
-            except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as exc:
+                status, text = self._raw_get(path)
+            except _RETRYABLE_TRANSPORT_ERRORS as exc:
                 last_error = exc
                 continue
 
-            if response.status_code in RETRYABLE_STATUS:
+            if status in RETRYABLE_STATUS:
                 last_error = CrtshError(
-                    f"crt.sh returned HTTP {response.status_code} (overloaded)"
+                    f"crt.sh returned HTTP {status} (overloaded)"
                 )
                 continue
 
             # crt.sh misuses 404 as a transient "overloaded" signal under load
             # (see MAX_404_RETRIES above), so retry it — but with a lower cap
             # than 502/503 since a 404 is more likely to be genuine.
-            if response.status_code == 404:
+            if status == 404:
                 not_found_retries += 1
                 last_error = CrtshError(
                     "crt.sh returned HTTP 404 (possibly transient overload)"
@@ -241,12 +302,12 @@ class CrtshClient:
                 continue
 
             # Non-retryable status codes fail immediately.
-            if response.status_code != 200:
+            if status != 200:
                 raise CrtshError(
-                    f"crt.sh request failed with HTTP {response.status_code}"
+                    f"crt.sh request failed with HTTP {status}"
                 )
 
-            return self._parse_response(response)
+            return self._parse_body(status, text)
 
         raise CrtshError(
             f"crt.sh unavailable after {MAX_RETRIES + 1} attempts — "
@@ -255,13 +316,13 @@ class CrtshClient:
         )
 
     @staticmethod
-    def _parse_response(response: httpx.Response) -> list[dict[str, Any]]:
+    def _parse_body(status: int, text: str) -> list[dict[str, Any]]:
         """Parse a 200 response body into a list of certificate dicts.
 
         Detects the "Unsupported output type: json" error body that crt.sh
         returns (with HTTP 200) for fingerprint / serial / ID lookups.
         """
-        text = response.text.strip()
+        text = text.strip()
 
         # crt.sh returns an HTML fragment for unsupported JSON lookups.
         if "Unsupported output type" in text:
@@ -274,7 +335,7 @@ class CrtshClient:
             return []
 
         try:
-            data = response.json()
+            data = json.loads(text)
         except ValueError as exc:
             raise CrtshError(
                 "crt.sh returned a non-JSON response — the service may be "

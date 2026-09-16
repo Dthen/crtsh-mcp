@@ -1,27 +1,37 @@
 """Tests for the crt.sh API client: retries, caching, parsing, subdomains."""
 
-import httpx
+import http.server
+import json
+import socketserver
+import threading
+import urllib.error
+import urllib.request
+
 import pytest
 
 import crtsh_mcp.client as client_mod
-from crtsh_mcp.client import CrtshClient, CrtshError, extract_subdomains
+from crtsh_mcp.client import (
+    CrtshClient,
+    CrtshError,
+    extract_subdomains,
+)
 
 
 def make_client(handler) -> CrtshClient:
-    """Build a client backed by an httpx.MockTransport (no live network)."""
-    transport = httpx.MockTransport(handler)
-    http = httpx.AsyncClient(base_url="https://crt.sh", transport=transport)
-    return CrtshClient(client=http)
+    """Build a client backed by a fake ``_raw_get`` seam (no live network).
+
+    ``handler`` is a ``callable(path) -> (status, body)``; raising from it
+    simulates a transport error at the seam.
+    """
+    client = CrtshClient()
+    client._raw_get = handler  # inject the seam (instance attribute shadows method)
+    return client
 
 
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch):
     """Make retry backoff instantaneous so tests run fast."""
-
-    async def _instant(_seconds):
-        return None
-
-    monkeypatch.setattr(client_mod.asyncio, "sleep", _instant)
+    monkeypatch.setattr(client_mod.time, "sleep", lambda _seconds: None)
 
 
 SAMPLE = [
@@ -42,179 +52,180 @@ SAMPLE = [
 # -- Successful search -----------------------------------------------------
 
 
-async def test_search_returns_parsed_list():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=SAMPLE)
+def test_search_returns_parsed_list():
+    def handler(path):
+        return (200, json.dumps(SAMPLE))
 
     client = make_client(handler)
-    result = await client.search("example.com")
+    result = client.search("example.com")
     assert result == SAMPLE
     assert result[0]["common_name"] == "example.com"
 
 
-async def test_search_empty_result_is_valid():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=[])
+def test_search_empty_result_is_valid():
+    def handler(path):
+        return (200, json.dumps([]))
 
     client = make_client(handler)
-    assert await client.search("no-such-domain-xyz.invalid") == []
+    assert client.search("no-such-domain-xyz.invalid") == []
 
 
 # -- Retry behaviour -------------------------------------------------------
 
 
-async def test_retry_on_502_then_success():
+def test_retry_on_502_then_success():
     calls = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(path):
         calls["n"] += 1
         if calls["n"] <= 2:
-            return httpx.Response(502, text="Bad Gateway")
-        return httpx.Response(200, json=SAMPLE)
+            return (502, "Bad Gateway")
+        return (200, json.dumps(SAMPLE))
 
     client = make_client(handler)
-    result = await client.search("example.com")
+    result = client.search("example.com")
     assert result == SAMPLE
     assert calls["n"] == 3  # two 502s, then success
 
 
-async def test_all_retries_failed_raises():
+def test_all_retries_failed_raises():
     calls = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(path):
         calls["n"] += 1
-        return httpx.Response(502, text="Bad Gateway")
+        return (502, "Bad Gateway")
 
     client = make_client(handler)
     with pytest.raises(CrtshError, match="unavailable after"):
-        await client.search("example.com")
+        client.search("example.com")
     # MAX_RETRIES + 1 total attempts.
     assert calls["n"] == client_mod.MAX_RETRIES + 1
 
 
-async def test_retry_on_timeout_then_success():
+def test_retry_on_timeout_then_success():
     calls = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(path):
         calls["n"] += 1
         if calls["n"] == 1:
-            raise httpx.ConnectTimeout("timed out")
-        return httpx.Response(200, json=SAMPLE)
+            # What the seam raises for a socket timeout (R1 conversion).
+            raise urllib.error.URLError(TimeoutError("timed out"))
+        return (200, json.dumps(SAMPLE))
 
     client = make_client(handler)
-    result = await client.search("example.com")
+    result = client.search("example.com")
     assert result == SAMPLE
     assert calls["n"] == 2
 
 
-async def test_non_retryable_status_raises_immediately():
+def test_non_retryable_status_raises_immediately():
     calls = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(path):
         calls["n"] += 1
-        return httpx.Response(500, text="Internal Server Error")
+        return (500, "Internal Server Error")
 
     client = make_client(handler)
     with pytest.raises(CrtshError, match="HTTP 500"):
-        await client.search("example.com")
+        client.search("example.com")
     assert calls["n"] == 1  # no retries for a 500
 
 
-async def test_retry_on_404_then_success():
+def test_retry_on_404_then_success():
     """crt.sh misuses 404 as a transient overload signal — retry it."""
     calls = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(path):
         calls["n"] += 1
         if calls["n"] <= 2:
-            return httpx.Response(404, text="Not Found")
-        return httpx.Response(200, json=SAMPLE)
+            return (404, "Not Found")
+        return (200, json.dumps(SAMPLE))
 
     client = make_client(handler)
-    result = await client.search("example.com")
+    result = client.search("example.com")
     assert result == SAMPLE
     assert calls["n"] == 3  # two 404s, then success
 
 
-async def test_404_cap_raises_after_two_retries():
+def test_404_cap_raises_after_two_retries():
     """404 retries are capped at 2 (3 total attempts), not retried forever."""
     calls = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(path):
         calls["n"] += 1
-        return httpx.Response(404, text="Not Found")
+        return (404, "Not Found")
 
     client = make_client(handler)
     with pytest.raises(CrtshError, match="HTTP 404"):
-        await client.search("example.com")
+        client.search("example.com")
     assert calls["n"] == client_mod.MAX_404_RETRIES + 1  # 3 total attempts
 
 
-async def test_400_not_retried():
+def test_400_not_retried():
     """Other 4xx (400) stay immediately fatal — guard against over-broadening."""
     calls = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(path):
         calls["n"] += 1
-        return httpx.Response(400, text="Bad Request")
+        return (400, "Bad Request")
 
     client = make_client(handler)
     with pytest.raises(CrtshError, match="HTTP 400"):
-        await client.search("example.com")
+        client.search("example.com")
     assert calls["n"] == 1  # no retries for a 400
 
 
 # -- Caching ---------------------------------------------------------------
 
 
-async def test_cache_hit_avoids_second_request():
+def test_cache_hit_avoids_second_request():
     calls = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(path):
         calls["n"] += 1
-        return httpx.Response(200, json=SAMPLE)
+        return (200, json.dumps(SAMPLE))
 
     client = make_client(handler)
-    first = await client.search("example.com", cache_ttl=300)
-    second = await client.search("example.com", cache_ttl=300)
+    first = client.search("example.com", cache_ttl=300)
+    second = client.search("example.com", cache_ttl=300)
     assert first == second == SAMPLE
     assert calls["n"] == 1  # second served from cache
 
 
-async def test_cache_ttl_zero_bypasses_cache():
+def test_cache_ttl_zero_bypasses_cache():
     calls = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(path):
         calls["n"] += 1
-        return httpx.Response(200, json=SAMPLE)
+        return (200, json.dumps(SAMPLE))
 
     client = make_client(handler)
-    await client.search("example.com", cache_ttl=0)
-    await client.search("example.com", cache_ttl=0)
+    client.search("example.com", cache_ttl=0)
+    client.search("example.com", cache_ttl=0)
     assert calls["n"] == 2
 
 
-async def test_cache_expiry_refetches(monkeypatch):
+def test_cache_expiry_refetches(monkeypatch):
     calls = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(path):
         calls["n"] += 1
-        return httpx.Response(200, json=SAMPLE)
+        return (200, json.dumps(SAMPLE))
 
     fake_time = {"t": 1000.0}
     monkeypatch.setattr(client_mod.time, "monotonic", lambda: fake_time["t"])
 
     client = make_client(handler)
-    await client.search("example.com", cache_ttl=60)
+    client.search("example.com", cache_ttl=60)
     fake_time["t"] += 61  # exceed TTL
-    await client.search("example.com", cache_ttl=60)
+    client.search("example.com", cache_ttl=60)
     assert calls["n"] == 2
 
 
-async def test_cache_is_bounded_evicts_oldest(monkeypatch):
+def test_cache_is_bounded_evicts_oldest(monkeypatch):
     """Filling the cache past MAX_CACHE_SIZE evicts the oldest entries."""
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=SAMPLE)
+    def handler(path):
+        return (200, json.dumps(SAMPLE))
 
     fake_time = {"t": 1000.0}
     monkeypatch.setattr(client_mod.time, "monotonic", lambda: fake_time["t"])
@@ -223,7 +234,7 @@ async def test_cache_is_bounded_evicts_oldest(monkeypatch):
     total = client_mod.MAX_CACHE_SIZE + 50
     for i in range(total):
         fake_time["t"] += 1.0  # strictly increasing timestamps
-        await client.search(f"domain-{i}.example.com", cache_ttl=3600)
+        client.search(f"domain-{i}.example.com", cache_ttl=3600)
 
     # Cache never grows beyond the bound.
     assert len(client._cache) == client_mod.MAX_CACHE_SIZE
@@ -234,18 +245,18 @@ async def test_cache_is_bounded_evicts_oldest(monkeypatch):
     )
 
 
-async def test_cache_returns_copies_not_references():
+def test_cache_returns_copies_not_references():
     """Mutating a returned result must not corrupt the cached data."""
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=SAMPLE)
+    def handler(path):
+        return (200, json.dumps(SAMPLE))
 
     client = make_client(handler)
-    first = await client.search("example.com", cache_ttl=300)
+    first = client.search("example.com", cache_ttl=300)
     # Mutate the returned data (both the list and the inner dict).
     first[0]["common_name"] = "MUTATED"
     first.append({"common_name": "INJECTED"})
 
-    second = await client.search("example.com", cache_ttl=300)
+    second = client.search("example.com", cache_ttl=300)
     assert second == SAMPLE  # cache served unmutated data
     assert second[0]["common_name"] == "example.com"
     assert len(second) == 1
@@ -254,57 +265,57 @@ async def test_cache_returns_copies_not_references():
 # -- Error body handling ---------------------------------------------------
 
 
-async def test_unsupported_output_type_raises():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, text="<BR><BR>Unsupported output type: json")
+def test_unsupported_output_type_raises():
+    def handler(path):
+        return (200, "<BR><BR>Unsupported output type: json")
 
     client = make_client(handler)
     with pytest.raises(CrtshError, match="HTML-only"):
-        await client.search("28A4EB5CE222C5BF4368AF8A0D64C59BDDD3C4EA")
+        client.search("28A4EB5CE222C5BF4368AF8A0D64C59BDDD3C4EA")
 
 
-async def test_non_json_body_raises_clear_error():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, text="<html>overloaded</html>")
+def test_non_json_body_raises_clear_error():
+    def handler(path):
+        return (200, "<html>overloaded</html>")
 
     client = make_client(handler)
     with pytest.raises(CrtshError, match="non-JSON"):
-        await client.search("example.com")
+        client.search("example.com")
 
 
-async def test_empty_query_raises_value_error():
-    client = make_client(lambda r: httpx.Response(200, json=[]))
+def test_empty_query_raises_value_error():
+    client = make_client(lambda path: (200, json.dumps([])))
     with pytest.raises(ValueError):
-        await client.search("   ")
+        client.search("   ")
 
 
 # -- URL encoding ----------------------------------------------------------
 
 
-async def test_wildcard_percent_is_url_encoded():
+def test_wildcard_percent_is_url_encoded():
     seen = {}
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        # The raw target preserves percent-encoding.
-        seen["raw"] = request.url.raw_path.decode()
-        return httpx.Response(200, json=[])
+    def handler(path):
+        # The seam receives the already percent-encoded path.
+        seen["raw"] = path
+        return (200, json.dumps([]))
 
     client = make_client(handler)
-    await client.search("%.example.com")
+    client.search("%.example.com")
     # "%" must be encoded as %25 so crt.sh receives the LIKE wildcard.
     assert "q=%25.example.com" in seen["raw"]
     assert "output=json" in seen["raw"]
 
 
-async def test_exclude_expired_param_added():
+def test_exclude_expired_param_added():
     seen = {}
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["raw"] = request.url.raw_path.decode()
-        return httpx.Response(200, json=[])
+    def handler(path):
+        seen["raw"] = path
+        return (200, json.dumps([]))
 
     client = make_client(handler)
-    await client.search("%.example.com", exclude_expired=True)
+    client.search("%.example.com", exclude_expired=True)
     assert "exclude=expired" in seen["raw"]
 
 
@@ -347,3 +358,85 @@ def test_extract_subdomains_filters_non_hostnames():
         assert " " not in s
         assert "@" not in s
         assert s != "*"
+
+
+# -- Redirect contract (T02 headline gate) ---------------------------------
+
+
+def test_canned_302_raises_and_is_never_followed(monkeypatch):
+    # proves the _NoRedirect guard: urllib's DEFAULT would silently follow and
+    # return the 200. Localhost socket-server form: canned 302 through the
+    # REAL opener.
+    seen = {"urls": []}
+    real_open = urllib.request.OpenerDirector.open
+
+    def spy(self, req, *a, **k):
+        seen["urls"].append(req.full_url if hasattr(req, "full_url") else req)
+        return real_open(self, req, *a, **k)
+
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", spy)
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path.startswith("/redirected"):     # must NEVER be reached
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"[]")
+                return
+            self.send_response(302)
+            self.send_header("Location", "/redirected")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv = socketserver.TCPServer(("127.0.0.1", 0), H)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        c = CrtshClient(base_url=f"http://127.0.0.1:{port}")
+        status, body = c._raw_get("/")               # seam returns the 3xx as a STATUS, never follows
+        assert status == 302
+        assert seen["urls"] == [f"http://127.0.0.1:{port}/"]  # exactly one request — no hop
+        with pytest.raises(CrtshError, match="HTTP 302"):     # legacy parity: one attempt, friendly error
+            c.search("example.com", cache_ttl=0)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+# -- UA on the wire ---------------------------------------------------------
+
+
+def test_raw_get_sets_user_agent_header(monkeypatch):
+    """The Request built by _raw_get carries the pinned legacy UA."""
+    captured = {}
+
+    class _FakeResponse:
+        status = 200
+
+        def read(self):
+            return b"[]"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class _FakeOpener:
+        def open(self, req, timeout=None):
+            captured["req"] = req
+            return _FakeResponse()
+
+    monkeypatch.setattr(client_mod, "_get_opener", lambda: _FakeOpener())
+    client = CrtshClient()
+    status, body = client._raw_get("/?q=example.com&output=json")
+    assert status == 200
+    req = captured["req"]
+    # urllib capitalises header keys when storing them ("User-Agent" ->
+    # "User-agent"); get_header applies the same normalisation.
+    assert req.get_header("User-agent") == "crtsh-mcp/0.1.0"
+    assert req.full_url == "https://crt.sh/?q=example.com&output=json"

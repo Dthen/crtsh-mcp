@@ -8,8 +8,6 @@ This file imports only `crtsh_mcp.client` (no httpx, no server), so it runs
 under BOTH the legacy venv today and the post-port package later.
 """
 
-import inspect
-
 import crtsh_mcp.client as c
 
 
@@ -49,5 +47,6 @@ def test_cache_cap():
 def test_user_agent():
     # VERIFIED client.py:123 — literal says 0.1.0 while pyproject says
     # 0.2.0. Port keeps the BYTES; do not "fix" the version drift here.
-    src = inspect.getsource(c.CrtshClient.__init__)
-    assert '"User-Agent": "crtsh-mcp/0.1.0"' in src
+    # T02 relocated the literal from the httpx ctor to module level
+    # (_USER_AGENT); the pinned bytes are unchanged.
+    assert c._USER_AGENT == "crtsh-mcp/0.1.0"
