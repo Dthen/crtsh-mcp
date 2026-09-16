@@ -1,20 +1,27 @@
-"""Smoke tests for the crt.sh MCP server skeleton."""
+"""Smoke tests for the crt.sh MCP server module (era rewrite, T08).
+
+Legacy smokes targeted the deleted fastmcp object (``server.mcp``); the
+era-equivalent surface is the module constants SERVER_INFO / TOOLS (the
+byte-freeze of the tool surface lives in test_stateless_era.py's golden
+comparison — these are cheap import/shape smokes, 3 -> 3, no shrink).
+"""
 
 
-def test_import_mcp_instance():
-    from crtsh_mcp.server import mcp
-
-    assert mcp is not None
+def test_module_imports():
+    import crtsh_mcp.server  # noqa: F401
 
 
-def test_server_name():
-    from crtsh_mcp.server import mcp
+def test_server_info_name():
+    from crtsh_mcp.server import SERVER_INFO
 
-    assert mcp.name == "crtsh"
+    assert SERVER_INFO["name"] == "crtsh"  # legacy mcp.name parity
 
 
-def test_instructions_mention_crtsh():
-    from crtsh_mcp.server import mcp
+def test_tools_surface_is_three():
+    from crtsh_mcp.server import TOOLS
 
-    assert "crt.sh" in mcp.instructions
-    assert "Certificate Transparency" in mcp.instructions
+    assert [t["name"] for t in TOOLS] == [
+        "search_certificates",
+        "discover_subdomains",
+        "get_certificate_details",
+    ]

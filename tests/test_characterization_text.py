@@ -16,7 +16,6 @@ fake (short-circuit cases never touch the client). crt.sh is never contacted.
 Pure stdlib + crtsh_mcp — no httpx, no fastmcp, no sleeps.
 """
 
-import asyncio
 import json
 import os
 
@@ -55,9 +54,8 @@ _SAMPLE_ROW = json.loads(FIXTURE["cases"][0]["return_repr"])["certificates"][0]
 
 
 def _patch_search(mode: str, log: list) -> None:
-    """Install a canned fake on the shared client (async pre-T07, sync
-    post-T07 — the era is picked off handle_call's absence, nothing else)."""
-    legacy = not hasattr(server_mod, "handle_call")
+    """Install a canned fake on the shared client (sync era post-T07 — the
+    legacy async branch died with the fastmcp server)."""
 
     def _rows_for(mode):
         if mode == "sample":
@@ -83,18 +81,11 @@ def _patch_search(mode: str, log: list) -> None:
             log.append(query)
             return _rows_for(mode)
 
-    if legacy:
-        async def search(query, *a, **k):
-            return behavior(query, *a, **k)
-        server_mod._client.search = search
-    else:
-        server_mod._client.search = behavior
+    server_mod._client.search = behavior
 
 
-async def _invoke(name: str, arguments: dict):
-    if hasattr(server_mod, "handle_call"):
-        return server_mod.handle_call(name, arguments)
-    return await getattr(server_mod, name)(**arguments)
+def _invoke(name: str, arguments: dict):
+    return server_mod.handle_call(name, arguments)
 
 
 def test_fixture_shape():
@@ -105,7 +96,7 @@ def test_fixture_shape():
 def _check_case(case: dict):
     log: list = []
     _patch_search(case["search_mode"], log)
-    result = asyncio.run(_invoke(case["name"], case["arguments"]))
+    result = _invoke(case["name"], case["arguments"])
     assert log == case["search_queries"], (
         f"{case['name']}{case['arguments']}: search saw {log!r}, "
         f"expected {case['search_queries']!r}")
