@@ -16,6 +16,8 @@ import select
 import subprocess
 import sys
 
+import pytest
+
 # --- spawn constants: ONE seam; T09 flips PROD_PY to the v2 venv python ------
 PROD_PY = "/mnt/HC_Volume_105667182/kimbo/mcp-venvs/crtsh-mcp-v2/bin/python3"  # flipped by T09 to the zero-dep v2 venv (D11: old venv kept as rollback anchor)
 SERVER_CMD = [PROD_PY, "-m", "crtsh_mcp.server"]  # package server — mirrors the real config args exactly
@@ -61,11 +63,30 @@ def rpc(p, obj):
     return json.loads(line)
 
 
+def _close_pipe(pipe):
+    """Close one subprocess pipe without masking the test outcome."""
+    if pipe is not None:
+        try:
+            pipe.close()
+        except OSError:
+            pass
+
+
 def cleanup(p):
-    """Kill-in-finally hygiene: no orphans after a hang-fail."""
-    if p.poll() is None:
-        p.kill()
-        p.wait()
+    """Signal EOF, reap the child, and close every captured pipe."""
+    try:
+        _close_pipe(p.stdin)
+        if p.poll() is None:
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait(timeout=5)
+    finally:
+        try:
+            _close_pipe(p.stdout)
+        finally:
+            _close_pipe(p.stderr)
 
 
 def assert_era_triple(result):
@@ -150,7 +171,8 @@ def test_tools_list_triple_and_no_output_schema():
 
 
 def test_tools_list_golden_byte_identity():
-    golden = json.load(open(GOLDEN_PATH))  # recipe 3: UNCONDITIONAL — no skipif, the golden is the tracked spec
+    with open(GOLDEN_PATH, encoding="utf-8") as golden_file:  # recipe 3: unconditional tracked spec
+        golden = json.load(golden_file)
     p = spawn()
     try:
         resp = rpc(p, {"jsonrpc": "2.0", "id": 6, "method": "tools/list"})
@@ -266,6 +288,51 @@ def test_id_less_unknown_is_silent():
         cleanup(p)
 
 
+@pytest.mark.parametrize("method, params", [
+    ("server/discover", {}),
+    ("tools/list", {}),
+    ("tools/call", {"name": "bogus", "arguments": {}}),
+    ("ping", {}),
+])
+def test_id_less_known_method_is_silent_before_correlated_response(method, params):
+    """Every known-method notification is silent before the next correlated reply."""
+    p = spawn()
+    try:
+        send_line(p, json.dumps({
+            "jsonrpc": "2.0", "method": method, "params": params,
+        }))
+        resp = rpc(p, {"jsonrpc": "2.0", "id": 99, "method": "ping"})
+        assert resp["id"] == 99
+        assert resp["result"] == {}
+        assert p.poll() is None
+    finally:
+        cleanup(p)
+
+
+@pytest.mark.parametrize("method, params", [
+    ("server/discover", {}),
+    ("tools/list", {}),
+    ("tools/call", {"name": "bogus", "arguments": {}}),
+    ("ping", {}),
+])
+def test_explicit_null_id_known_method_receives_response(method, params):
+    """An explicit JSON-RPC id member, including null, is echoed verbatim."""
+    p = spawn()
+    try:
+        resp = rpc(p, {
+            "jsonrpc": "2.0", "id": None, "method": method, "params": params,
+        })
+        assert "id" in resp
+        assert resp["id"] is None
+        if method == "tools/call":
+            assert resp["result"]["content"][0]["text"] == '{"error":"Unknown tool: bogus"}'
+            assert resp["result"].get("isError") is True
+        else:
+            assert "result" in resp
+    finally:
+        cleanup(p)
+
+
 # ---------------------------------------------------------------------------
 # Regression tests (5) — REFERENCE §7 server-killer guards
 # ---------------------------------------------------------------------------
@@ -327,8 +394,7 @@ def test_binary_garbage_line_does_not_kill_the_server():
         assert p.poll() is None
         p.stdin.close(); assert p.wait(timeout=5) == 0                             # clean EOF exit
     finally:
-        if p.poll() is None:
-            p.kill(); p.wait()
+        cleanup(p)
 
 
 def test_exit_on_stdin_eof_rc0():
