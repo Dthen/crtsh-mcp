@@ -90,8 +90,8 @@ legacy literal `crtsh-mcp/0.1.0`; pinned by tests.
 
 ```
 server key: crtsh — config.yaml:970-975 today:
-  command: .../mcp-venvs/crtsh-mcp/bin/python3 ; args: [-m, crtsh_mcp.server]
+  command: <venv-root>/crtsh-mcp/bin/python3 ; args: [-m, crtsh_mcp.server]
 target after cutover (D.1 flips, ONE restart window; keep old venv until D.1b):
-  command: /mnt/HC_Volume_105667182/kimbo/mcp-venvs/crtsh-mcp-v2/bin/python3
+  command: ${PROD_PY}            # e.g. <venv-root>/crtsh-mcp-v2/bin/python3
   args: [-m, crtsh_mcp.server] ; protocol: stateless
 ```

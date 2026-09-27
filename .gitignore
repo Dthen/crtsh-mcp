@@ -8,3 +8,5 @@ dist/
 build/
 golden/*
 !golden/*.json
+# machine-local pointer to the production interpreter (see test_stateless_era._prod_py)
+.prod_py

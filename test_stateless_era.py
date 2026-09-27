@@ -18,11 +18,40 @@ import sys
 
 import pytest
 
-# --- spawn constants: ONE seam; T09 flips PROD_PY to the v2 venv python ------
-PROD_PY = "/mnt/HC_Volume_105667182/kimbo/mcp-venvs/crtsh-mcp-v2/bin/python3"  # flipped by T09 to the zero-dep v2 venv (D11: old venv kept as rollback anchor)
+REPO = os.path.dirname(os.path.abspath(__file__))
+
+
+def _prod_py() -> str:
+    """Resolve the production interpreter without naming any host-specific path.
+
+    Order: $PROD_PY (or $PROD_PY_CRTSH) -> the gitignored, untracked .prod_py
+    pointer file -> raise.  There is deliberately NO sys.executable fallback and
+    NO skip: this suite runs under a pytest-capable interpreter that still
+    carries fastmcp, while the server under test must be the zero-dependency
+    v2 interpreter.  Substituting the runner would test the wrong server and
+    make the zero-deps gate vacuous, and skipping would silently replace a real
+    proof with a no-op.  Failing loudly is the correct outcome when unconfigured.
+    """
+    env = os.environ.get("PROD_PY") or os.environ.get("PROD_PY_CRTSH")
+    if env:
+        return env
+    local = os.path.join(REPO, ".prod_py")  # gitignored, untracked, machine-local
+    if os.path.isfile(local):
+        with open(local, encoding="utf-8") as fh:
+            return fh.read().strip()
+    raise RuntimeError(
+        "Production interpreter not configured. Set $PROD_PY, or write the path to "
+        f"{local} (gitignored). Tests must not fall back to sys.executable: the suite "
+        "interpreter still carries fastmcp while the server under test must be the "
+        "zero-dependency v2 interpreter, so that fallback would substitute the wrong "
+        "interpreter and make the zero-deps gate vacuous."
+    )
+
+
+# --- spawn constants: ONE seam; PROD_PY is the zero-dep v2 interpreter ------
+PROD_PY = _prod_py()
 SERVER_CMD = [PROD_PY, "-m", "crtsh_mcp.server"]  # package server — mirrors the real config args exactly
 
-REPO = os.path.dirname(os.path.abspath(__file__))
 GOLDEN_PATH = os.path.join(REPO, "golden", "crtsh.tools.json")
 TIMEOUT = 5.0  # per-read deadline; keeps a wedged legacy server far under the ~60 s budget
 
